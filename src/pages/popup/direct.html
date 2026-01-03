@@ -57,16 +57,58 @@
         .btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .btn-primary { background-color: #1da1f2; color: white; }
         .debug { font-size: 10px; color: #657786; margin-top: 8px; word-break: break-all; }
+        .stats-box {
+            background-color: #192734;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            padding: 4px 0;
+            color: #8899a6;
+        }
+        .stat-row span:last-child {
+            color: #1da1f2;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
     <h1>🐦 Direct Tweet Scraper</h1>
     <div id="status" class="status info">Loading...</div>
-    <div class="setting-row">
-        <span>Scroll delay (sec):</span>
-        <input type="number" id="wait-time" value="2" min="1" max="10">
+    
+    <!-- Stats section (hidden by default) -->
+    <div id="stats-section" style="display: none;">
+        <div class="stats-box">
+            <div class="stat-row">
+                <span>Phase:</span>
+                <span id="stat-phase">-</span>
+            </div>
+            <div class="stat-row">
+                <span>Tweets scraped:</span>
+                <span id="stat-tweets">0</span>
+            </div>
+            <div class="stat-row">
+                <span>Replies scraped:</span>
+                <span id="stat-replies">0</span>
+            </div>
+            <div class="stat-row">
+                <span>Reply posts:</span>
+                <span id="stat-reply-progress">-</span>
+            </div>
+        </div>
     </div>
-    <button id="scrape-btn" class="btn btn-primary">🚀 Start Scraping</button>
+    
+    <div id="settings-section">
+        <div class="setting-row">
+            <span>Scroll delay (sec):</span>
+            <input type="number" id="wait-time" value="2" min="1" max="10">
+        </div>
+        <button id="scrape-btn" class="btn btn-primary">🚀 Start Scraping</button>
+    </div>
     <div id="debug" class="debug"></div>
 
     <script src="popup.js"></script>

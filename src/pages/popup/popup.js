@@ -11,7 +11,82 @@ function setStatus(text, type) {
     el.className = 'status ' + (type || 'info');
 }
 
-debug('Script loaded');
+// Show/hide stats section
+function showStats(show) {
+    var statsEl = document.getElementById('stats-section');
+    var settingsEl = document.getElementById('settings-section');
+    if (statsEl) statsEl.style.display = show ? 'block' : 'none';
+    if (settingsEl) settingsEl.style.display = show ? 'none' : 'block';
+}
+
+// Update stats display
+function updateStats(state) {
+    if (!state) return;
+    
+    var phaseEl = document.getElementById('stat-phase');
+    var tweetsEl = document.getElementById('stat-tweets');
+    var repliesEl = document.getElementById('stat-replies');
+    var progressEl = document.getElementById('stat-reply-progress');
+    
+    if (phaseEl) {
+        var phaseText = state.phase === 'main' ? 'Main Page' : 
+                        state.phase === 'replies' ? 'Reply Scraping' : 
+                        state.phase === 'complete' ? 'Complete' : state.phase;
+        phaseEl.textContent = phaseText;
+    }
+    if (tweetsEl) tweetsEl.textContent = state.tweetsScraped || 0;
+    if (repliesEl) repliesEl.textContent = state.repliesScraped || 0;
+    if (progressEl && state.totalReplyPosts > 0) {
+        progressEl.textContent = state.currentReplyPost + '/' + state.totalReplyPosts;
+    } else if (progressEl) {
+        progressEl.textContent = '-';
+    }
+    
+    // Update status with state message
+    if (state.statusMessage) {
+        var statusEl = document.getElementById('status');
+        statusEl.textContent = state.statusMessage;
+        statusEl.style.color = state.statusColor || '#1da1f2';
+    }
+}
+
+// Check scraping state from storage directly (more reliable than messaging)
+function checkScrapingState(callback) {
+    chrome.storage.local.get(['scrapingState'], function(result) {
+        if (chrome.runtime.lastError) {
+            debug('Storage error: ' + chrome.runtime.lastError.message);
+            callback(null);
+            return;
+        }
+        callback(result.scrapingState || null);
+    });
+}
+
+// Poll for state updates
+var pollInterval = null;
+function startPolling() {
+    if (pollInterval) return;
+    pollInterval = setInterval(function() {
+        checkScrapingState(function(state) {
+            if (state && state.isRunning) {
+                updateStats(state);
+            } else if (state && !state.isRunning && state.phase === 'complete') {
+                updateStats(state);
+                stopPolling();
+            } else {
+                stopPolling();
+                showStats(false);
+            }
+        });
+    }, 1000);
+}
+
+function stopPolling() {
+    if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+    }
+}
 
 // Get current tab
 function getTab(callback) {
@@ -42,27 +117,49 @@ function isSearchPage(url) {
     return url.indexOf('x.com/search') !== -1 || url.indexOf('twitter.com/search') !== -1;
 }
 
-// Initialize
-debug('Calling getTab...');
-getTab(function(tab, error) {
-    if (error) {
-        setStatus('Error: ' + error, 'error');
-        debug('Tab error: ' + error);
-        return;
-    }
+debug('Script loaded');
+
+// Check if scraping is already running
+checkScrapingState(function(state) {
+    debug('State check: ' + JSON.stringify(state));
     
-    var url = tab.url || '';
-    debug('URL: ' + url.substring(0, 50));
-    
-    if (isSearchPage(url)) {
-        setStatus('✅ Ready to scrape!', 'success');
-        document.getElementById('scrape-btn').disabled = false;
-    } else if (url.indexOf('chrome://') === 0) {
-        setStatus('Cannot run on chrome:// pages', 'warning');
+    if (state && state.isRunning) {
+        debug('Scrape in progress - showing stats');
+        showStats(true);
+        updateStats(state);
+        startPolling();
+    } else if (state && state.phase === 'complete') {
+        debug('Scrape complete - showing stats');
+        showStats(true);
+        updateStats(state);
     } else {
-        setStatus('Go to x.com/search?q=... first', 'warning');
+        debug('No active scrape - showing normal UI');
+        initNormalUI();
     }
 });
+
+function initNormalUI() {
+    // Get current tab
+    getTab(function(tab, error) {
+        if (error) {
+            setStatus('Error: ' + error, 'error');
+            debug('Tab error: ' + error);
+            return;
+        }
+        
+        var url = tab.url || '';
+        debug('URL: ' + url.substring(0, 50));
+        
+        if (isSearchPage(url)) {
+            setStatus('✅ Ready to scrape!', 'success');
+            document.getElementById('scrape-btn').disabled = false;
+        } else if (url.indexOf('chrome://') === 0) {
+            setStatus('Cannot run on chrome:// pages', 'warning');
+        } else {
+            setStatus('Go to x.com/search?q=... first', 'warning');
+        }
+    });
+}
 
 // Button click handler
 document.getElementById('scrape-btn').onclick = function() {
@@ -109,7 +206,10 @@ document.getElementById('scrape-btn').onclick = function() {
                 
                 setStatus('✅ Scraper running!', 'success');
                 debug('Script injected successfully');
-                setTimeout(function() { window.close(); }, 1500);
+                
+                // Show stats and start polling instead of closing
+                showStats(true);
+                startPolling();
             });
         });
     });
