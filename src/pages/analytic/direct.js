@@ -32,9 +32,11 @@ function renderTweets(tweets) {
     const uniqueUsers = [...new Set(tweets.map(t => t.username).filter(Boolean))].length;
     const totalLikes = tweets.reduce((sum, t) => sum + (parseInt(formatNumber(t.like)) || 0), 0);
     const totalRetweets = tweets.reduce((sum, t) => sum + (parseInt(formatNumber(t.retweet)) || 0), 0);
+    const repliesCount = tweets.filter(t => t.isReply).length;
     
     stats.innerHTML = `
         <span>Total: <span class="stat-value">${tweets.length}</span> tweets</span>
+        <span>Replies: <span class="stat-value">${repliesCount}</span></span>
         <span>Users: <span class="stat-value">${uniqueUsers}</span></span>
         <span>Likes: <span class="stat-value">${totalLikes.toLocaleString()}</span></span>
         <span>Retweets: <span class="stat-value">${totalRetweets.toLocaleString()}</span></span>
@@ -48,23 +50,27 @@ function renderTweets(tweets) {
                     <th>User</th>
                     <th>Content</th>
                     <th>Type</th>
+                    <th>Reply To</th>
                     <th>Likes</th>
                     <th>Retweets</th>
                     <th>Replies</th>
                     <th>Date</th>
+                    <th>Link</th>
                 </tr>
             </thead>
             <tbody>
                 ${tweets.map((t, i) => `
-                    <tr>
+                    <tr class="${t.isReply ? 'reply-row' : ''}">
                         <td>${i + 1}</td>
                         <td><span class="username">@${t.username || 'unknown'}</span></td>
                         <td><div class="tweet-content" title="${(t.content || '').replace(/"/g, '&quot;')}">${t.content || '(no text)'}</div></td>
                         <td><span class="type-badge type-${t.postType || 'text'}">${t.postType || 'text'}</span></td>
+                        <td>${t.parentTweetUrl ? `<a href="${t.parentTweetUrl}" target="_blank" class="parent-link">@${t.parentUsername || '?'}</a>` : (t.isReply ? '<span class="reply-badge">Reply</span>' : '')}</td>
                         <td class="number">${formatNumber(t.like)}</td>
                         <td class="number">${formatNumber(t.retweet)}</td>
                         <td class="number">${formatNumber(t.reply)}</td>
                         <td class="time">${formatDate(t.time)}</td>
+                        <td>${t.tweetUrl ? `<a href="${t.tweetUrl}" target="_blank" class="tweet-link">🔗</a>` : ''}</td>
                     </tr>
                 `).join('')}
             </tbody>
@@ -75,7 +81,7 @@ function renderTweets(tweets) {
 function downloadCSV() {
     if (!allTweets.length) return;
     
-    const headers = ['username', 'content', 'postType', 'like', 'retweet', 'reply', 'time', 'image', 'video'];
+    const headers = ['tweetId', 'tweetUrl', 'username', 'content', 'postType', 'like', 'retweet', 'reply', 'time', 'isReply', 'parentTweetId', 'parentTweetUrl', 'parentUsername', 'replyingTo', 'image', 'video'];
     const rows = allTweets.map(t => headers.map(h => {
         let val = t[h];
         if (Array.isArray(val)) val = val.join('; ');
