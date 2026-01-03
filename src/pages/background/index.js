@@ -275,7 +275,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             const status = JSON.parse(message.source);
             // Parse tweet count from status message like "21 tweets scraped (last: ...)"
             const match = status.content.match(/(\d+) tweets? scraped/);
-            if (match) {
+            if (match && scrapingState.phase !== 'replies') {
+                // Only update tweetsScraped during main phase, not during reply phase
                 updateScrapingState({
                     tweetsScraped: parseInt(match[1]),
                     statusMessage: status.content,
