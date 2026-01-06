@@ -15,7 +15,7 @@
    "name": "Twitter Search Extractor",
    "permissions": [ "activeTab", "scripting", "tabs", "storage" ],
    "update_url": "https://clients2.google.com/service/update2/crx",
-   "version": "0.0.15",
+   "version": "0.0.16",
    "web_accessible_resources": [ {
       "matches": [ "*://*/*" ],
       "resources": [ "assets/js/*.js", "assets/css/*.css", "icon-128.png", "icon-34.png" ]

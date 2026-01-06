@@ -149,10 +149,16 @@ if (!window.retrievePostData) {
 }
 
 if (!window.scrollToBottom) {
-  window.scrollToBottom = async (document, waitTime) => {
+  window.scrollToBottom = async (document, waitTime, maxTweets) => {
     var numberOfRepeat = 0;
     var preScrollHeight = 0;
     while (numberOfRepeat < 2) {
+      // Check if we've hit the max tweets limit
+      if (maxTweets > 0 && window.allArticle.length >= maxTweets) {
+        console.log('[DirectScraper] Reached max tweets limit:', maxTweets);
+        break;
+      }
+      
       if (preScrollHeight !== document.body.scrollHeight) {
         preScrollHeight = document.body.scrollHeight;
         await window.retrievePostData();
@@ -167,11 +173,13 @@ if (!window.scrollToBottom) {
 }
 
 (async () => {
-  // Get wait time from window variable (set by popup) or URL param, default 2 seconds
-  var waitTime = window.scraperWaitTime || 2;
-  
-  // Check if we should also scrape replies
-  var scrapeReplies = window.scraperScrapeReplies !== false; // default true
+  // Get settings from window variable (set by popup)
+  var settings = window.scraperSettings || {};
+  var waitTime = settings.waitTime || window.scraperWaitTime || 2;
+  var maxTweets = settings.maxTweets || 0;
+  var scrapeReplies = settings.scrapeReplies !== undefined ? settings.scrapeReplies : (window.scraperScrapeReplies !== false);
+  var includeMedia = settings.includeMedia !== undefined ? settings.includeMedia : true;
+  var includeMetrics = settings.includeMetrics !== undefined ? settings.includeMetrics : true;
   
   // Also check URL param as fallback
   var queryString = window.location.search;
@@ -181,17 +189,40 @@ if (!window.scrollToBottom) {
     waitTime = parseInt(urlWait) || 2;
   }
   
-  console.log('[DirectScraper] Starting with wait time:', waitTime, 'seconds');
+  console.log('[DirectScraper] Starting with settings:', { waitTime, maxTweets, scrapeReplies, includeMedia, includeMetrics });
   
   chrome.runtime.sendMessage({
     action: "getStatus",
     source: JSON.stringify({
-      content: `Starting direct scrape (${waitTime}s delay)...`,
+      content: `Starting direct scrape (${waitTime}s delay${maxTweets > 0 ? ', max ' + maxTweets : ''})...`,
       color: "#57C2CE",
     }),
   });
   
-  await window.scrollToBottom(document, waitTime);
+  await window.scrollToBottom(document, waitTime, maxTweets);
+  
+  // Apply max tweets limit if set
+  if (maxTweets > 0 && window.allArticle.length > maxTweets) {
+    window.allArticle = window.allArticle.slice(0, maxTweets);
+  }
+  
+  // Apply media/metrics filters if needed
+  if (!includeMedia || !includeMetrics) {
+    window.allArticle = window.allArticle.map(tweet => {
+      var filtered = { ...tweet };
+      if (!includeMedia) {
+        filtered.image = [];
+        filtered.video = [];
+      }
+      if (!includeMetrics) {
+        filtered.like = '';
+        filtered.retweet = '';
+        filtered.reply = '';
+        filtered.spread = '';
+      }
+      return filtered;
+    });
+  }
   
   // Collect URLs of tweets that have replies
   var tweetsWithReplies = [];
@@ -234,7 +265,8 @@ if (!window.scrollToBottom) {
       action: "scrapeReplies",
       mainTweets: JSON.stringify(window.allArticle),
       replyUrls: tweetsWithReplies,
-      waitTime: waitTime
+      waitTime: waitTime,
+      settings: settings
     }, (response) => {
       console.log('[DirectScraper] scrapeReplies response:', response);
     });

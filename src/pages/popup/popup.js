@@ -168,7 +168,22 @@ document.getElementById('scrape-btn').onclick = function() {
     setStatus('Starting...', 'info');
     debug('Button clicked');
     
+    // Gather all settings
     var waitTime = parseInt(document.getElementById('wait-time').value) || 2;
+    var maxTweets = parseInt(document.getElementById('max-tweets').value) || 0;
+    var scrapeReplies = document.getElementById('scrape-replies').checked;
+    var includeMedia = document.getElementById('include-media').checked;
+    var includeMetrics = document.getElementById('include-metrics').checked;
+    
+    var settings = {
+        waitTime: waitTime,
+        maxTweets: maxTweets,
+        scrapeReplies: scrapeReplies,
+        includeMedia: includeMedia,
+        includeMetrics: includeMetrics
+    };
+    
+    debug('Settings: ' + JSON.stringify(settings));
     
     getTab(function(tab, error) {
         if (error || !tab) {
@@ -179,11 +194,14 @@ document.getElementById('scrape-btn').onclick = function() {
         
         debug('Injecting into tab ' + tab.id);
         
-        // Inject wait time first
+        // Inject settings first
         chrome.scripting.executeScript({
             target: { tabId: tab.id },
-            func: function(wt) { window.scraperWaitTime = wt; },
-            args: [waitTime]
+            func: function(s) { 
+                window.scraperSettings = s;
+                window.scraperWaitTime = s.waitTime;
+            },
+            args: [settings]
         }, function() {
             if (chrome.runtime.lastError) {
                 setStatus('Error: ' + chrome.runtime.lastError.message, 'error');

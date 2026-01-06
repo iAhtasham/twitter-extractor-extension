@@ -7,6 +7,7 @@ let allReplies = [];
 let currentReplyIndex = 0;
 let scrapeWaitTime = 2;
 let currentScrapingTabId = null;
+let scraperSettings = {}; // Store settings for reply phase
 
 // Scraping state for popup
 let scrapingState = {
@@ -64,13 +65,14 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         setTimeout(() => {
             chrome.scripting.executeScript({
                 target: { tabId: tabId },
-                func: (waitTime) => {
-                    window.scraperWaitTime = waitTime;
+                func: (settings) => {
+                    window.scraperSettings = settings;
+                    window.scraperWaitTime = settings.waitTime;
                     window.scraperScrapeReplies = false; // Don't recurse
                     window.allArticle = []; // Reset for new page
                     window.articleChecker = [];
                 },
-                args: [scrapeWaitTime]
+                args: [scraperSettings]
             }).then(() => {
                 return chrome.scripting.executeScript({
                     target: { tabId: tabId },
@@ -184,6 +186,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         replyQueue = message.replyUrls;
         currentReplyIndex = 0;
         scrapeWaitTime = message.waitTime || 2;
+        scraperSettings = message.settings || { waitTime: scrapeWaitTime, scrapeReplies: false };
+        scraperSettings.scrapeReplies = false; // Don't recurse
         allReplies = [];
         
         updateScrapingState({
