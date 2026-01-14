@@ -250,7 +250,8 @@ if (!window.scrollToBottom) {
     console.log('[DirectScraper] Found', tweetsWithReplies.length, 'tweets with replies');
   }
   
-  if (tweetsWithReplies.length > 0) {
+  if (tweetsWithReplies.length > 0 && !window.isBulkScrape) {
+    // Only do reply scraping for non-bulk mode (bulk mode doesn't support replies yet)
     chrome.runtime.sendMessage({
       action: "getStatus",
       source: JSON.stringify({
@@ -281,9 +282,19 @@ if (!window.scrollToBottom) {
     
     console.log('[DirectScraper] Complete! Total tweets:', window.allArticle.length);
     
-    chrome.runtime.sendMessage({
-      action: "getPost",
-      source: JSON.stringify(window.allArticle),
-    });
+    // Check if this is a bulk scrape
+    if (window.isBulkScrape) {
+      console.log('[DirectScraper] Sending bulk result for keyword:', window.bulkKeyword);
+      chrome.runtime.sendMessage({
+        action: "bulkScrapeResult",
+        source: JSON.stringify(window.allArticle),
+        keyword: window.bulkKeyword
+      });
+    } else {
+      chrome.runtime.sendMessage({
+        action: "getPost",
+        source: JSON.stringify(window.allArticle),
+      });
+    }
   }
 })();

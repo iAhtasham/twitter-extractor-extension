@@ -21,6 +21,235 @@ let scrapingState = {
     statusColor: '#8899a6'
 };
 
+// ============================================
+// BULK KEYWORD SCRAPING STATE
+// ============================================
+let bulkState = {
+    isRunning: false,
+    keywords: [],
+    currentKeywordIndex: 0,
+    completedKeywords: 0,
+    totalKeywords: 0,
+    activeTabs: [], // { tabId, keyword, status: 'loading'|'scraping'|'done' }
+    allResults: [], // { keyword, tweets: [] }
+    settings: {},
+    maxConcurrentTabs: 3,
+    statusMessage: 'Idle',
+    statusColor: '#8899a6'
+};
+
+// Persist bulk state
+function updateBulkState(updates) {
+    Object.assign(bulkState, updates);
+    console.log('[Background] Bulk state updated:', JSON.stringify(bulkState));
+    chrome.storage.local.set({ bulkState: bulkState });
+}
+
+// Reset bulk state
+function resetBulkState() {
+    bulkState = {
+        isRunning: false,
+        keywords: [],
+        currentKeywordIndex: 0,
+        completedKeywords: 0,
+        totalKeywords: 0,
+        activeTabs: [],
+        allResults: [],
+        settings: {},
+        maxConcurrentTabs: 3,
+        statusMessage: 'Idle',
+        statusColor: '#8899a6'
+    };
+    chrome.storage.local.set({ bulkState: bulkState });
+}
+
+// Load bulk state on startup
+chrome.storage.local.get(['bulkState'], function(result) {
+    if (result.bulkState) {
+        bulkState = result.bulkState;
+        console.log('[Background] Restored bulk state:', bulkState);
+    }
+});
+
+// Open next batch of tabs for keywords
+async function openNextKeywordTabs() {
+    if (!bulkState.isRunning) return;
+    
+    const availableSlots = bulkState.maxConcurrentTabs - bulkState.activeTabs.filter(t => t.status !== 'done').length;
+    
+    for (let i = 0; i < availableSlots; i++) {
+        if (bulkState.currentKeywordIndex >= bulkState.keywords.length) break;
+        
+        const keyword = bulkState.keywords[bulkState.currentKeywordIndex];
+        bulkState.currentKeywordIndex++;
+        
+        // Build Twitter search URL
+        const searchUrl = `https://x.com/search?q=${encodeURIComponent(keyword)}&src=typed_query&f=live`;
+        
+        console.log('[Background] Opening tab for keyword:', keyword);
+        
+        try {
+            const tab = await chrome.tabs.create({ url: searchUrl, active: false });
+            bulkState.activeTabs.push({
+                tabId: tab.id,
+                keyword: keyword,
+                status: 'loading'
+            });
+            
+            updateBulkState({
+                statusMessage: `Opening tabs... (${bulkState.currentKeywordIndex}/${bulkState.totalKeywords})`,
+                statusColor: '#1da1f2'
+            });
+        } catch (err) {
+            console.error('[Background] Failed to open tab for keyword:', keyword, err);
+        }
+    }
+}
+
+// Handle bulk tab loaded - inject scraper
+async function handleBulkTabLoaded(tabId) {
+    const tabInfo = bulkState.activeTabs.find(t => t.tabId === tabId);
+    if (!tabInfo || tabInfo.status !== 'loading') return;
+    
+    console.log('[Background] Bulk tab loaded, injecting scraper for:', tabInfo.keyword);
+    tabInfo.status = 'scraping';
+    
+    updateBulkState({
+        statusMessage: `Scraping: "${tabInfo.keyword}"...`,
+        statusColor: '#1da1f2'
+    });
+    
+    // Small delay to ensure page is ready
+    await new Promise(r => setTimeout(r, 1500));
+    
+    try {
+        // Inject settings
+        await chrome.scripting.executeScript({
+            target: { tabId: tabId },
+            func: (settings) => {
+                window.scraperSettings = settings;
+                window.scraperWaitTime = settings.waitTime;
+                window.scraperScrapeReplies = settings.scrapeReplies;
+                window.allArticle = [];
+                window.articleChecker = [];
+                window.isBulkScrape = true;
+                window.bulkKeyword = settings.currentKeyword;
+            },
+            args: [{ ...bulkState.settings, currentKeyword: tabInfo.keyword }]
+        });
+        
+        // Inject scraper
+        await chrome.scripting.executeScript({
+            target: { tabId: tabId },
+            files: ['assets/js/directScraper.js']
+        });
+        
+        console.log('[Background] Bulk scraper injected for:', tabInfo.keyword);
+    } catch (err) {
+        console.error('[Background] Failed to inject bulk scraper:', err);
+        tabInfo.status = 'done';
+        bulkState.completedKeywords++;
+        checkBulkComplete();
+    }
+}
+
+// Handle bulk scrape result from a tab
+function handleBulkResult(tabId, tweets) {
+    const tabInfo = bulkState.activeTabs.find(t => t.tabId === tabId);
+    if (!tabInfo) return;
+    
+    console.log('[Background] Received bulk result for:', tabInfo.keyword, '- Tweets:', tweets.length);
+    
+    // Tag tweets with keyword
+    tweets.forEach(t => t.searchKeyword = tabInfo.keyword);
+    
+    bulkState.allResults.push({
+        keyword: tabInfo.keyword,
+        tweets: tweets
+    });
+    
+    tabInfo.status = 'done';
+    bulkState.completedKeywords++;
+    
+    // Close the tab
+    try {
+        chrome.tabs.remove(tabId);
+    } catch (e) {
+        console.log('[Background] Tab already closed');
+    }
+    
+    updateBulkState({
+        completedKeywords: bulkState.completedKeywords,
+        statusMessage: `Completed ${bulkState.completedKeywords}/${bulkState.totalKeywords} keywords`,
+        statusColor: '#5ABD4E'
+    });
+    
+    checkBulkComplete();
+}
+
+// Check if bulk scraping is complete
+function checkBulkComplete() {
+    // Remove done tabs from active list
+    bulkState.activeTabs = bulkState.activeTabs.filter(t => t.status !== 'done');
+    
+    // Update state
+    updateBulkState({
+        activeTabs: bulkState.activeTabs
+    });
+    
+    // If more keywords to process, open more tabs
+    if (bulkState.currentKeywordIndex < bulkState.keywords.length) {
+        openNextKeywordTabs();
+        return;
+    }
+    
+    // Check if all tabs are done
+    if (bulkState.activeTabs.length === 0 && bulkState.completedKeywords >= bulkState.totalKeywords) {
+        console.log('[Background] Bulk scraping complete!');
+        
+        // Combine all results
+        const allTweets = bulkState.allResults.flatMap(r => r.tweets);
+        
+        updateBulkState({
+            isRunning: false,
+            statusMessage: `Complete! ${allTweets.length} total tweets from ${bulkState.totalKeywords} keywords`,
+            statusColor: '#5ABD4E'
+        });
+        
+        // Save results and open analytics
+        chrome.storage.local.set({ 
+            postData: JSON.stringify(allTweets),
+            bulkResults: JSON.stringify(bulkState.allResults)
+        }, function() {
+            console.log('[Background] Bulk results saved');
+            chrome.tabs.create({ url: 'src/pages/analytic/direct.html' });
+        });
+        
+        // Reset after delay
+        setTimeout(() => resetBulkState(), 5000);
+    }
+}
+
+// Handle tab removal (user closed tab or error)
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+    if (!bulkState.isRunning) return;
+    
+    const tabInfo = bulkState.activeTabs.find(t => t.tabId === tabId);
+    if (tabInfo && tabInfo.status !== 'done') {
+        console.log('[Background] Tab removed for keyword:', tabInfo.keyword);
+        tabInfo.status = 'done';
+        bulkState.completedKeywords++;
+        
+        updateBulkState({
+            completedKeywords: bulkState.completedKeywords,
+            statusMessage: `Tab closed for "${tabInfo.keyword}" - continuing...`,
+            statusColor: '#ffad1f'
+        });
+        
+        checkBulkComplete();
+    }
+});
+
 // Load state from storage on startup (in case service worker was restarted)
 chrome.storage.local.get(['scrapingState'], function(result) {
     if (result.scrapingState) {
@@ -57,6 +286,15 @@ function resetScrapingState() {
 
 // Listen for tab updates to know when page is loaded
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    // Handle bulk scraping tab loads
+    if (bulkState.isRunning && changeInfo.status === 'complete') {
+        const bulkTab = bulkState.activeTabs.find(t => t.tabId === tabId && t.status === 'loading');
+        if (bulkTab) {
+            handleBulkTabLoaded(tabId);
+            return;
+        }
+    }
+    
     // Only care about our scraping tab and when it's done loading
     if (tabId === currentScrapingTabId && changeInfo.status === 'complete' && replyQueue.length > 0) {
         console.log('[Background] Page loaded, injecting scraper...');
@@ -300,6 +538,66 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Handle popup requesting current state
     if (message.action === 'getScrapingState') {
         sendResponse(scrapingState);
+        return true;
+    }
+    
+    // ============================================
+    // BULK KEYWORD SCRAPING HANDLERS
+    // ============================================
+    
+    // Start bulk keyword scraping
+    if (message.action === 'startBulkScrape') {
+        console.log('[Background] Starting bulk scrape with', message.keywords.length, 'keywords');
+        
+        resetBulkState();
+        
+        bulkState.isRunning = true;
+        bulkState.keywords = message.keywords;
+        bulkState.totalKeywords = message.keywords.length;
+        bulkState.settings = message.settings || { waitTime: 2, scrapeReplies: true };
+        bulkState.maxConcurrentTabs = message.maxConcurrentTabs || 3;
+        
+        updateBulkState({
+            statusMessage: `Starting bulk scrape of ${message.keywords.length} keywords...`,
+            statusColor: '#1da1f2'
+        });
+        
+        // Start opening tabs
+        openNextKeywordTabs();
+        
+        sendResponse({ success: true, message: 'Bulk scraping started' });
+        return true;
+    }
+    
+    // Handle bulk scrape result from a tab
+    if (message.action === 'bulkScrapeResult') {
+        if (sender.tab) {
+            const tweets = JSON.parse(message.source);
+            handleBulkResult(sender.tab.id, tweets);
+        }
+        sendResponse({ success: true });
+        return true;
+    }
+    
+    // Handle popup requesting bulk state
+    if (message.action === 'getBulkState') {
+        sendResponse(bulkState);
+        return true;
+    }
+    
+    // Cancel bulk scraping
+    if (message.action === 'cancelBulkScrape') {
+        console.log('[Background] Cancelling bulk scrape');
+        
+        // Close all active tabs
+        for (const tab of bulkState.activeTabs) {
+            try {
+                chrome.tabs.remove(tab.tabId);
+            } catch (e) {}
+        }
+        
+        resetBulkState();
+        sendResponse({ success: true, message: 'Bulk scraping cancelled' });
         return true;
     }
 });

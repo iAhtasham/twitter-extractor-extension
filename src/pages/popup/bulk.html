@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Bulk Keyword Scraper</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            width: 380px;
+            min-height: 400px;
+            background-color: #15202b;
+            color: white;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            padding: 16px;
+        }
+        h1 { font-size: 16px; margin-bottom: 12px; text-align: center; }
+        .subtitle { 
+            font-size: 11px; 
+            color: #8899a6; 
+            text-align: center; 
+            margin-bottom: 16px; 
+        }
+        .status {
+            background-color: #192734;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+            font-size: 12px;
+            text-align: center;
+            word-break: break-all;
+        }
+        .success { color: #5ABD4E; }
+        .error { color: #e0245e; }
+        .info { color: #1da1f2; }
+        .warning { color: #ffad1f; }
+        .setting-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            font-size: 13px;
+            color: #8899a6;
+        }
+        input[type="number"] {
+            width: 60px;
+            padding: 6px 8px;
+            border: 1px solid #38444d;
+            border-radius: 4px;
+            background-color: #192734;
+            color: white;
+            font-size: 13px;
+            text-align: center;
+        }
+        textarea {
+            width: 100%;
+            height: 150px;
+            padding: 10px;
+            border: 1px solid #38444d;
+            border-radius: 8px;
+            background-color: #192734;
+            color: white;
+            font-size: 12px;
+            resize: vertical;
+            margin-bottom: 12px;
+            font-family: inherit;
+        }
+        textarea::placeholder {
+            color: #657786;
+        }
+        .btn {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            margin-bottom: 8px;
+        }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-primary { background-color: #1da1f2; color: white; }
+        .btn-secondary { background-color: #38444d; color: white; }
+        .btn-danger { background-color: #e0245e; color: white; }
+        .btn-link {
+            background: none;
+            color: #1da1f2;
+            text-decoration: underline;
+            padding: 8px;
+            font-size: 12px;
+        }
+        .debug { font-size: 10px; color: #657786; margin-top: 8px; word-break: break-all; }
+        .stats-box {
+            background-color: #192734;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            padding: 4px 0;
+            color: #8899a6;
+        }
+        .stat-row span:last-child {
+            color: #1da1f2;
+            font-weight: bold;
+        }
+        .checkbox-row {
+            justify-content: flex-start;
+        }
+        .checkbox-row label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            color: #e1e8ed;
+        }
+        .checkbox-row input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: #1da1f2;
+        }
+        .keyword-count {
+            font-size: 11px;
+            color: #657786;
+            text-align: right;
+            margin-bottom: 4px;
+        }
+        .keyword-count.warning {
+            color: #ffad1f;
+        }
+        .keyword-count.error {
+            color: #e0245e;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background-color: #38444d;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+        .progress-fill {
+            height: 100%;
+            background-color: #1da1f2;
+            transition: width 0.3s ease;
+        }
+        .active-keywords {
+            font-size: 11px;
+            color: #8899a6;
+            margin-top: 8px;
+            max-height: 60px;
+            overflow-y: auto;
+        }
+        .active-keywords span {
+            display: inline-block;
+            background-color: #38444d;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin: 2px;
+            font-size: 10px;
+        }
+        .back-link {
+            text-align: center;
+            margin-bottom: 12px;
+        }
+        .back-link a {
+            color: #8899a6;
+            font-size: 12px;
+            text-decoration: none;
+        }
+        .back-link a:hover {
+            color: #1da1f2;
+        }
+    </style>
+</head>
+<body>
+    <div class="back-link">
+        <a href="direct.html">← Back to Single Scraper</a>
+    </div>
+    
+    <h1>🔍 Bulk Keyword Scraper</h1>
+    <p class="subtitle">Scrape tweets from multiple keywords simultaneously (max 20)</p>
+    
+    <div id="status" class="status info">Enter keywords to start</div>
+    
+    <!-- Stats section (hidden by default) -->
+    <div id="stats-section" style="display: none;">
+        <div class="stats-box">
+            <div class="stat-row">
+                <span>Progress:</span>
+                <span id="stat-progress">0/0</span>
+            </div>
+            <div class="stat-row">
+                <span>Active tabs:</span>
+                <span id="stat-active-tabs">0</span>
+            </div>
+            <div class="stat-row">
+                <span>Total tweets:</span>
+                <span id="stat-total-tweets">0</span>
+            </div>
+            <div class="progress-bar">
+                <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+            </div>
+            <div id="active-keywords" class="active-keywords"></div>
+        </div>
+        <button id="cancel-btn" class="btn btn-danger">❌ Cancel Scraping</button>
+    </div>
+    
+    <div id="settings-section">
+        <label class="keyword-count" id="keyword-count">0 / 20 keywords</label>
+        <textarea id="keywords-input" placeholder="Enter keywords (one per line):
+
+Example:
+bitcoin price
+ethereum news
+crypto trading
+..."></textarea>
+        
+        <div class="setting-row">
+            <span>Concurrent tabs:</span>
+            <input type="number" id="concurrent-tabs" value="3" min="1" max="5">
+        </div>
+        <div class="setting-row">
+            <span>Scroll delay (sec):</span>
+            <input type="number" id="wait-time" value="2" min="1" max="10">
+        </div>
+        <div class="setting-row">
+            <span>Max tweets per keyword:</span>
+            <input type="number" id="max-tweets" value="50" min="0" max="1000">
+        </div>
+        
+        <button id="scrape-btn" class="btn btn-primary" disabled>🚀 Start Bulk Scraping</button>
+    </div>
+    
+    <div id="debug" class="debug"></div>
+
+    <script src="bulk.js"></script>
+</body>
+</html>
