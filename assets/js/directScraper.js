@@ -1,6 +1,57 @@
 // Direct scraper - works on any search page without filters
-window.articleChecker = [];
-window.allArticle = [];
+// Don't reset if already initialized (prevents losing data on re-injection)
+if (!window.articleChecker) {
+  window.articleChecker = [];
+}
+if (!window.allArticle) {
+  window.allArticle = [];
+}
+
+console.log('[DirectScraper] Script loaded. Current allArticle length:', window.allArticle.length);
+
+if (!window.checkForTwitterError) {
+  window.checkForTwitterError = function() {
+    // Check for "Something went wrong" error
+    var errorTexts = document.querySelectorAll('[dir="ltr"]');
+    for (var elem of errorTexts) {
+      if (elem.innerText && (elem.innerText.includes('Something went wrong') || elem.innerText.includes('Try reloading'))) {
+        console.warn('[DirectScraper] Detected Twitter error state!');
+        return true;
+      }
+    }
+    return false;
+  };
+}
+
+if (!window.attemptErrorRecovery) {
+  window.attemptErrorRecovery = async function() {
+    console.log('[DirectScraper] Attempting error recovery...');
+    
+    // Try clicking the retry button
+    var retryButtons = document.querySelectorAll('button[role="button"]');
+    for (var btn of retryButtons) {
+      if (btn.innerText && btn.innerText.includes('Retry')) {
+        console.log('[DirectScraper] Clicking retry button');
+        btn.click();
+        await window.waitTill(3000); // Wait for page to recover
+        return true;
+      }
+    }
+    
+    // Fallback: try clicking on the search input to trigger reload
+    var searchInput = document.querySelector('input[aria-label="Search query"]');
+    if (searchInput) {
+      console.log('[DirectScraper] Clicking search input for recovery');
+      searchInput.click();
+      await window.waitTill(2000);
+      searchInput.blur();
+      await window.waitTill(2000);
+      return true;
+    }
+    
+    return false;
+  };
+}
 
 if (!window.waitTill) {
   window.waitTill = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -10,12 +61,23 @@ if (!window.retrievePostData) {
   window.retrievePostData = async function () {
     var trial = 1;
     var article = document.querySelectorAll("article");
+    console.log('[DirectScraper] retrievePostData called. Found', article.length, 'article elements');
+    
     while (trial < 5 && article.length === 0) {
       trial++;
       article = document.querySelectorAll("article");
       await window.waitTill(1000);
     }
+    
+    if (article.length === 0) {
+      console.warn('[DirectScraper] No articles found after', trial, 'attempts');
+      return;
+    }
+    
     var articleData = [];
+    var newTweetsAdded = 0;
+    var skippedArticles = 0;
+    
     for (const element of article) {
       var timeDom = element.querySelector("time");
       var textsDom = element.querySelectorAll("[data-testid=tweetText] > *");
@@ -40,6 +102,12 @@ if (!window.retrievePostData) {
           tweetId = match[2];
           tweetUrl = "https://x.com" + href;
         }
+      }
+      
+      // Skip articles without essential data
+      if (!tweetId || !username) {
+        skippedArticles++;
+        continue;
       }
       
       // Try to get display name
@@ -133,8 +201,11 @@ if (!window.retrievePostData) {
       );
       if (index <= -1) {
         window.allArticle.push(data);
+        newTweetsAdded++;
       }
     }
+    
+    console.log('[DirectScraper] Processed', article.length, 'articles.', newTweetsAdded, 'new tweets added,', skippedArticles, 'skipped. Total:', window.allArticle.length);
     
     var lastTime = articleData.length > 0 ? articleData[articleData.length - 1].time : "N/A";
     chrome.runtime.sendMessage({
@@ -152,27 +223,78 @@ if (!window.scrollToBottom) {
   window.scrollToBottom = async (document, waitTime, maxTweets) => {
     var numberOfRepeat = 0;
     var preScrollHeight = 0;
-    while (numberOfRepeat < 2) {
+    var preTweetCount = 0;
+    var maxRepeatsWithoutChange = 5; // Increased from 2 to 5 for more thorough scrolling
+    var errorRecoveryAttempts = 0;
+    var maxErrorRecoveryAttempts = 3;
+    
+    console.log('[DirectScraper] Starting scroll with waitTime:', waitTime, 'maxTweets:', maxTweets);
+    
+    while (numberOfRepeat < maxRepeatsWithoutChange) {
+      // Check for Twitter error state
+      if (window.checkForTwitterError()) {
+        console.warn('[DirectScraper] Twitter error detected during scrolling');
+        if (errorRecoveryAttempts < maxErrorRecoveryAttempts) {
+          errorRecoveryAttempts++;
+          var recovered = await window.attemptErrorRecovery();
+          if (recovered) {
+            console.log('[DirectScraper] Recovery successful, continuing scroll');
+            numberOfRepeat = 0; // Reset counter after recovery
+            await window.waitTill(waitTime * 1000);
+            continue;
+          } else {
+            console.error('[DirectScraper] Recovery failed, stopping scroll');
+            break;
+          }
+        } else {
+          console.error('[DirectScraper] Max recovery attempts reached, stopping scroll');
+          break;
+        }
+      }
+      
       // Check if we've hit the max tweets limit
       if (maxTweets > 0 && window.allArticle.length >= maxTweets) {
         console.log('[DirectScraper] Reached max tweets limit:', maxTweets);
         break;
       }
       
-      if (preScrollHeight !== document.body.scrollHeight) {
+      var currentTweetCount = window.allArticle.length;
+      
+      // Scroll and retrieve data
+      await window.retrievePostData();
+      window.scrollTo(0, document.body.scrollHeight);
+      
+      // Check if we found new tweets OR if scroll height changed
+      var scrollChanged = preScrollHeight !== document.body.scrollHeight;
+      var tweetsChanged = preTweetCount !== currentTweetCount;
+      
+      if (scrollChanged || tweetsChanged) {
+        console.log('[DirectScraper] Progress: tweets=' + window.allArticle.length + 
+                    ', scrollHeight=' + document.body.scrollHeight);
+        numberOfRepeat = 0; // Reset counter when we find new content
         preScrollHeight = document.body.scrollHeight;
-        await window.retrievePostData();
-        window.scrollTo(0, preScrollHeight);
+        preTweetCount = currentTweetCount;
       } else {
         numberOfRepeat++;
+        console.log('[DirectScraper] No new content. Attempt ' + numberOfRepeat + '/' + maxRepeatsWithoutChange);
       }
+      
       await window.waitTill(waitTime * 1000);
     }
+    
+    console.log('[DirectScraper] Scrolling complete. Total tweets:', window.allArticle.length);
     return true;
   };
 }
 
 (async () => {
+  // Prevent double execution
+  if (window.scraperExecuting) {
+    console.log('[DirectScraper] Already executing, skipping');
+    return;
+  }
+  window.scraperExecuting = true;
+  
   // Get settings from window variable (set by popup)
   var settings = window.scraperSettings || {};
   var waitTime = settings.waitTime || window.scraperWaitTime || 2;
@@ -189,7 +311,8 @@ if (!window.scrollToBottom) {
     waitTime = parseInt(urlWait) || 2;
   }
   
-  console.log('[DirectScraper] Starting with settings:', { waitTime, maxTweets, scrapeReplies, includeMedia, includeMetrics });
+  console.log('[DirectScraper] Starting with settings:', { waitTime, maxTweets, scrapeReplies, includeMedia, includeMetrics, isBulkScrape: window.isBulkScrape });
+  console.log('[DirectScraper] Current URL:', window.location.href);
   
   chrome.runtime.sendMessage({
     action: "getStatus",
@@ -281,20 +404,43 @@ if (!window.scrollToBottom) {
     });
     
     console.log('[DirectScraper] Complete! Total tweets:', window.allArticle.length);
+    console.log('[DirectScraper] Sample of first 3 tweets:', window.allArticle.slice(0, 3).map(t => ({ username: t.username, tweetId: t.tweetId, content: t.content.substring(0, 50) })));
     
     // Check if this is a bulk scrape
     if (window.isBulkScrape) {
-      console.log('[DirectScraper] Sending bulk result for keyword:', window.bulkKeyword);
-      chrome.runtime.sendMessage({
-        action: "bulkScrapeResult",
-        source: JSON.stringify(window.allArticle),
-        keyword: window.bulkKeyword
-      });
+      console.log('[DirectScraper] Sending bulk result for keyword:', window.bulkKeyword, '- Tweets:', window.allArticle.length);
+      try {
+        chrome.runtime.sendMessage({
+          action: "bulkScrapeResult",
+          source: JSON.stringify(window.allArticle),
+          keyword: window.bulkKeyword
+        }, (response) => {
+          console.log('[DirectScraper] Bulk result sent. Response:', response);
+          if (chrome.runtime.lastError) {
+            console.error('[DirectScraper] Error sending bulk result:', chrome.runtime.lastError);
+          }
+        });
+      } catch (err) {
+        console.error('[DirectScraper] Exception sending bulk result:', err);
+      }
     } else {
-      chrome.runtime.sendMessage({
-        action: "getPost",
-        source: JSON.stringify(window.allArticle),
-      });
+      console.log('[DirectScraper] Sending normal result - Tweets:', window.allArticle.length);
+      try {
+        chrome.runtime.sendMessage({
+          action: "getPost",
+          source: JSON.stringify(window.allArticle),
+        }, (response) => {
+          console.log('[DirectScraper] Normal result sent. Response:', response);
+          if (chrome.runtime.lastError) {
+            console.error('[DirectScraper] Error sending result:', chrome.runtime.lastError);
+          }
+        });
+      } catch (err) {
+        console.error('[DirectScraper] Exception sending result:', err);
+      }
     }
   }
+  
+  window.scraperExecuting = false;
+  console.log('[DirectScraper] Execution complete');
 })();

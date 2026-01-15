@@ -36,7 +36,8 @@ let bulkState = {
     maxConcurrentTabs: 3,
     statusMessage: 'Idle',
     statusColor: '#8899a6',
-    timeoutCheckInterval: null
+    timeoutCheckInterval: null,
+    completionTriggered: false // Prevent multiple completion triggers
 };
 
 // Persist bulk state
@@ -65,7 +66,8 @@ function resetBulkState() {
         maxConcurrentTabs: 3,
         statusMessage: 'Idle',
         statusColor: '#8899a6',
-        timeoutCheckInterval: null
+        timeoutCheckInterval: null,
+        completionTriggered: false
     };
     chrome.storage.local.set({ bulkState: bulkState });
 }
@@ -112,6 +114,11 @@ async function openNextKeywordTabs() {
                 statusMessage: `Opening tabs... (${bulkState.currentKeywordIndex}/${bulkState.totalKeywords})`,
                 statusColor: '#1da1f2'
             });
+            
+            // Add delay between opening tabs to avoid triggering rate limits
+            if (i < availableSlots - 1) {
+                await new Promise(r => setTimeout(r, 2000)); // 2 second delay between tabs
+            }
         } catch (err) {
             console.error('[Background] Failed to open tab for keyword:', keyword, err);
         }
@@ -132,8 +139,8 @@ async function handleBulkTabLoaded(tabId) {
         statusColor: '#1da1f2'
     });
     
-    // Small delay to ensure page is ready
-    await new Promise(r => setTimeout(r, 1500));
+    // Longer delay to ensure page is fully ready
+    await new Promise(r => setTimeout(r, 3000));
     
     try {
         // Check if tab still exists
@@ -145,6 +152,14 @@ async function handleBulkTabLoaded(tabId) {
             checkBulkComplete();
             return;
         }
+        
+        // Verify the tab has loaded the search page
+        if (!tab.url || !tab.url.includes('x.com/search')) {
+            console.warn('[Background] Tab URL not correct:', tab.url);
+            await new Promise(r => setTimeout(r, 2000)); // Wait a bit more
+        }
+        
+        console.log('[Background] Injecting settings for:', tabInfo.keyword);
         
         // Inject settings
         await chrome.scripting.executeScript({
@@ -183,9 +198,16 @@ async function handleBulkTabLoaded(tabId) {
 // Handle bulk scrape result from a tab
 function handleBulkResult(tabId, tweets) {
     const tabInfo = bulkState.activeTabs.find(t => t.tabId === tabId);
-    if (!tabInfo) return;
+    if (!tabInfo) {
+        console.warn('[Background] handleBulkResult: Tab not found in activeTabs:', tabId);
+        return;
+    }
     
     console.log('[Background] Received bulk result for:', tabInfo.keyword, '- Tweets:', tweets.length);
+    
+    if (tweets.length === 0) {
+        console.warn('[Background] WARNING: Zero tweets received for keyword:', tabInfo.keyword);
+    }
     
     // Tag tweets with keyword
     tweets.forEach(t => t.searchKeyword = tabInfo.keyword);
@@ -194,6 +216,8 @@ function handleBulkResult(tabId, tweets) {
         keyword: tabInfo.keyword,
         tweets: tweets
     });
+    
+    console.log('[Background] Total results so far:', bulkState.allResults.length, 'keywords, total tweets:', bulkState.allResults.reduce((sum, r) => sum + r.tweets.length, 0));
     
     // Mark as done BEFORE closing tab to prevent onRemoved from double-processing
     tabInfo.status = 'done';
@@ -218,7 +242,10 @@ function checkForStuckTabs() {
     if (!bulkState.isRunning) return;
     
     const now = Date.now();
-    const TIMEOUT_MS = 120000; // 2 minutes timeout per tab
+    // Calculate timeout based on settings: waitTime * maxScrollAttempts * 1000 + buffer
+    // With 10s wait and 5 attempts, that's 50s per scroll cycle, plus time to load/process
+    // Conservative: 5 minutes per keyword should be enough
+    const TIMEOUT_MS = 300000; // 5 minutes timeout per tab
     
     const stuckTabs = bulkState.activeTabs.filter(t => 
         t.status !== 'done' && (now - t.startTime) > TIMEOUT_MS
@@ -272,10 +299,20 @@ function checkBulkComplete() {
 
     // Check if all tabs are done and all keywords are marked complete
     if (bulkState.activeTabs.length === 0 && bulkState.completedKeywords >= bulkState.totalKeywords) {
+        // Prevent multiple completions
+        if (bulkState.completionTriggered) {
+            console.log('[Background] Completion already triggered, skipping');
+            return;
+        }
+        
+        bulkState.completionTriggered = true;
         console.log('[Background] Bulk scraping complete!');
+        console.log('[Background] Total results:', bulkState.allResults.length);
+        console.log('[Background] Results breakdown:', bulkState.allResults.map(r => `${r.keyword}: ${r.tweets.length} tweets`));
 
         // Combine all results
         const allTweets = bulkState.allResults.flatMap(r => r.tweets);
+        console.log('[Background] Combined total tweets:', allTweets.length);
 
         updateBulkState({
             isRunning: false,
@@ -283,12 +320,12 @@ function checkBulkComplete() {
             statusColor: '#5ABD4E'
         });
 
-        // Save results and open analytics
+        // Save results and open analytics ONCE
         chrome.storage.local.set({ 
             postData: JSON.stringify(allTweets),
             bulkResults: JSON.stringify(bulkState.allResults)
         }, function() {
-            console.log('[Background] Bulk results saved');
+            console.log('[Background] Bulk results saved. Opening analytics...');
             chrome.tabs.create({ url: 'src/pages/analytic/direct.html' });
         });
 

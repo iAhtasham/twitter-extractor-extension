@@ -220,8 +220,8 @@ document.getElementById('scrape-btn').onclick = function() {
     }
     
     var settings = {
-        waitTime: parseInt(document.getElementById('wait-time').value) || 2,
-        maxTweets: parseInt(document.getElementById('max-tweets').value) || 50,
+        waitTime: parseInt(document.getElementById('wait-time').value) || 10,
+        maxTweets: parseInt(document.getElementById('max-tweets').value) || 500,
         scrapeReplies: false, // Replies not supported in bulk mode
         includeMedia: true,
         includeMetrics: true
