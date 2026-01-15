@@ -89,6 +89,40 @@ async function openNextKeywordTabs() {
     
     const availableSlots = bulkState.maxConcurrentTabs - bulkState.activeTabs.filter(t => t.status !== 'done').length;
     
+    // Special case: if maxConcurrentTabs = 1 and we have a tab, reuse it
+    if (bulkState.maxConcurrentTabs === 1 && bulkState.activeTabs.length > 0) {
+        const existingTab = bulkState.activeTabs[0];
+        if (existingTab.status === 'done' && bulkState.currentKeywordIndex < bulkState.keywords.length) {
+            const keyword = bulkState.keywords[bulkState.currentKeywordIndex];
+            console.log('[Background] Reusing tab for next keyword:', keyword);
+            bulkState.currentKeywordIndex++;
+            
+            const searchUrl = `https://x.com/search?q=${encodeURIComponent(keyword)}&src=typed_query&f=live`;
+            
+            try {
+                // Update existing tab info
+                existingTab.keyword = keyword;
+                existingTab.status = 'loading';
+                existingTab.startTime = Date.now();
+                
+                updateBulkState({
+                    statusMessage: `Processing keyword ${bulkState.currentKeywordIndex}/${bulkState.totalKeywords}: "${keyword}"`,
+                    statusColor: '#1da1f2'
+                });
+                
+                // Navigate to new search URL
+                await chrome.tabs.update(existingTab.tabId, { url: searchUrl });
+                console.log('[Background] Navigated existing tab to:', searchUrl);
+                return;
+            } catch (err) {
+                console.error('[Background] Failed to navigate tab:', err);
+                // If navigation fails, remove the tab and create new one
+                bulkState.activeTabs = [];
+            }
+        }
+    }
+    
+    // Normal flow: create new tabs
     for (let i = 0; i < availableSlots; i++) {
         if (bulkState.currentKeywordIndex >= bulkState.keywords.length) break;
         
@@ -116,7 +150,7 @@ async function openNextKeywordTabs() {
             });
             
             // Add delay between opening tabs to avoid triggering rate limits
-            if (i < availableSlots - 1) {
+            if (i < availableSlots - 1 && bulkState.maxConcurrentTabs > 1) {
                 await new Promise(r => setTimeout(r, 2000)); // 2 second delay between tabs
             }
         } catch (err) {
@@ -229,10 +263,17 @@ function handleBulkResult(tabId, tweets) {
         statusColor: '#5ABD4E'
     });
     
-    // Close the tab (onRemoved will be triggered but tab is already marked 'done')
-    chrome.tabs.remove(tabId).catch(e => {
-        console.log('[Background] Tab already closed:', e);
-    });
+    // Only close tab if we're using multiple concurrent tabs OR if all keywords are done
+    const shouldCloseTab = bulkState.maxConcurrentTabs > 1 || bulkState.completedKeywords >= bulkState.totalKeywords;
+    
+    if (shouldCloseTab) {
+        console.log('[Background] Closing tab for:', tabInfo.keyword);
+        chrome.tabs.remove(tabId).catch(e => {
+            console.log('[Background] Tab already closed:', e);
+        });
+    } else {
+        console.log('[Background] Keeping tab open for reuse');
+    }
     
     checkBulkComplete();
 }
@@ -277,18 +318,28 @@ function checkForStuckTabs() {
 
 // Check if bulk scraping is complete
 function checkBulkComplete() {
-    // Remove done tabs from active list
-    bulkState.activeTabs = bulkState.activeTabs.filter(t => t.status !== 'done');
+    // For single tab mode, don't remove done tabs - we reuse them
+    if (bulkState.maxConcurrentTabs === 1) {
+        // Check if we have more keywords to process
+        if (bulkState.currentKeywordIndex < bulkState.keywords.length) {
+            console.log('[Background] Single tab mode: moving to next keyword');
+            openNextKeywordTabs();
+            return;
+        }
+    } else {
+        // Multiple tab mode: remove done tabs from active list
+        bulkState.activeTabs = bulkState.activeTabs.filter(t => t.status !== 'done');
 
-    // Update state
-    updateBulkState({
-        activeTabs: bulkState.activeTabs
-    });
+        // Update state
+        updateBulkState({
+            activeTabs: bulkState.activeTabs
+        });
 
-    // If more keywords to process, open more tabs
-    if (bulkState.currentKeywordIndex < bulkState.keywords.length) {
-        openNextKeywordTabs();
-        return;
+        // If more keywords to process, open more tabs
+        if (bulkState.currentKeywordIndex < bulkState.keywords.length) {
+            openNextKeywordTabs();
+            return;
+        }
     }
 
     // Fallback: If all tabs are done but not all keywords are marked complete, force-complete
@@ -320,6 +371,13 @@ function checkBulkComplete() {
             statusColor: '#5ABD4E'
         });
 
+        // Close any remaining tabs (including the reused one in single tab mode)
+        for (const tabInfo of bulkState.activeTabs) {
+            chrome.tabs.remove(tabInfo.tabId).catch(e => {
+                console.log('[Background] Could not close tab:', e);
+            });
+        }
+        
         // Save results and open analytics ONCE
         chrome.storage.local.set({ 
             postData: JSON.stringify(allTweets),
