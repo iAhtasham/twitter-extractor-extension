@@ -30,12 +30,13 @@ let bulkState = {
     currentKeywordIndex: 0,
     completedKeywords: 0,
     totalKeywords: 0,
-    activeTabs: [], // { tabId, keyword, status: 'loading'|'scraping'|'done' }
+    activeTabs: [], // { tabId, keyword, status: 'loading'|'scraping'|'done', startTime: timestamp }
     allResults: [], // { keyword, tweets: [] }
     settings: {},
     maxConcurrentTabs: 3,
     statusMessage: 'Idle',
-    statusColor: '#8899a6'
+    statusColor: '#8899a6',
+    timeoutCheckInterval: null
 };
 
 // Persist bulk state
@@ -47,6 +48,11 @@ function updateBulkState(updates) {
 
 // Reset bulk state
 function resetBulkState() {
+    // Clear timeout check interval if it exists
+    if (bulkState.timeoutCheckInterval) {
+        clearInterval(bulkState.timeoutCheckInterval);
+    }
+    
     bulkState = {
         isRunning: false,
         keywords: [],
@@ -58,7 +64,8 @@ function resetBulkState() {
         settings: {},
         maxConcurrentTabs: 3,
         statusMessage: 'Idle',
-        statusColor: '#8899a6'
+        statusColor: '#8899a6',
+        timeoutCheckInterval: null
     };
     chrome.storage.local.set({ bulkState: bulkState });
 }
@@ -75,25 +82,30 @@ chrome.storage.local.get(['bulkState'], function(result) {
 async function openNextKeywordTabs() {
     if (!bulkState.isRunning) return;
     
+    console.log('[Background] openNextKeywordTabs - keywords array:', JSON.stringify(bulkState.keywords));
+    console.log('[Background] openNextKeywordTabs - currentKeywordIndex:', bulkState.currentKeywordIndex);
+    
     const availableSlots = bulkState.maxConcurrentTabs - bulkState.activeTabs.filter(t => t.status !== 'done').length;
     
     for (let i = 0; i < availableSlots; i++) {
         if (bulkState.currentKeywordIndex >= bulkState.keywords.length) break;
         
         const keyword = bulkState.keywords[bulkState.currentKeywordIndex];
+        console.log('[Background] Processing keyword at index', bulkState.currentKeywordIndex, ':', keyword, '- type:', typeof keyword);
         bulkState.currentKeywordIndex++;
         
         // Build Twitter search URL
         const searchUrl = `https://x.com/search?q=${encodeURIComponent(keyword)}&src=typed_query&f=live`;
         
-        console.log('[Background] Opening tab for keyword:', keyword);
+        console.log('[Background] Opening tab for keyword:', keyword, '- URL:', searchUrl);
         
         try {
             const tab = await chrome.tabs.create({ url: searchUrl, active: false });
             bulkState.activeTabs.push({
                 tabId: tab.id,
                 keyword: keyword,
-                status: 'loading'
+                status: 'loading',
+                startTime: Date.now()
             });
             
             updateBulkState({
@@ -113,6 +125,7 @@ async function handleBulkTabLoaded(tabId) {
     
     console.log('[Background] Bulk tab loaded, injecting scraper for:', tabInfo.keyword);
     tabInfo.status = 'scraping';
+    tabInfo.startTime = Date.now(); // Reset timer when scraping starts
     
     updateBulkState({
         statusMessage: `Scraping: "${tabInfo.keyword}"...`,
@@ -123,6 +136,16 @@ async function handleBulkTabLoaded(tabId) {
     await new Promise(r => setTimeout(r, 1500));
     
     try {
+        // Check if tab still exists
+        const tab = await chrome.tabs.get(tabId).catch(() => null);
+        if (!tab) {
+            console.log('[Background] Tab no longer exists for:', tabInfo.keyword);
+            tabInfo.status = 'done';
+            bulkState.completedKeywords++;
+            checkBulkComplete();
+            return;
+        }
+        
         // Inject settings
         await chrome.scripting.executeScript({
             target: { tabId: tabId },
@@ -149,6 +172,10 @@ async function handleBulkTabLoaded(tabId) {
         console.error('[Background] Failed to inject bulk scraper:', err);
         tabInfo.status = 'done';
         bulkState.completedKeywords++;
+        
+        // Try to close the problematic tab
+        chrome.tabs.remove(tabId).catch(e => console.log('[Background] Could not close tab:', e));
+        
         checkBulkComplete();
     }
 }
@@ -168,15 +195,9 @@ function handleBulkResult(tabId, tweets) {
         tweets: tweets
     });
     
+    // Mark as done BEFORE closing tab to prevent onRemoved from double-processing
     tabInfo.status = 'done';
     bulkState.completedKeywords++;
-    
-    // Close the tab
-    try {
-        chrome.tabs.remove(tabId);
-    } catch (e) {
-        console.log('[Background] Tab already closed');
-    }
     
     updateBulkState({
         completedKeywords: bulkState.completedKeywords,
@@ -184,38 +205,84 @@ function handleBulkResult(tabId, tweets) {
         statusColor: '#5ABD4E'
     });
     
+    // Close the tab (onRemoved will be triggered but tab is already marked 'done')
+    chrome.tabs.remove(tabId).catch(e => {
+        console.log('[Background] Tab already closed:', e);
+    });
+    
     checkBulkComplete();
+}
+
+// Check for stuck tabs and force-complete them
+function checkForStuckTabs() {
+    if (!bulkState.isRunning) return;
+    
+    const now = Date.now();
+    const TIMEOUT_MS = 120000; // 2 minutes timeout per tab
+    
+    const stuckTabs = bulkState.activeTabs.filter(t => 
+        t.status !== 'done' && (now - t.startTime) > TIMEOUT_MS
+    );
+    
+    if (stuckTabs.length > 0) {
+        console.warn('[Background] Found', stuckTabs.length, 'stuck tabs. Force-completing them.');
+        
+        for (const tabInfo of stuckTabs) {
+            console.log('[Background] Force-completing stuck tab for keyword:', tabInfo.keyword);
+            tabInfo.status = 'done';
+            bulkState.completedKeywords++;
+            
+            // Close the stuck tab
+            chrome.tabs.remove(tabInfo.tabId).catch(e => {
+                console.log('[Background] Could not close stuck tab:', e);
+            });
+        }
+        
+        updateBulkState({
+            completedKeywords: bulkState.completedKeywords,
+            statusMessage: `Recovered from stuck tabs - ${bulkState.completedKeywords}/${bulkState.totalKeywords} complete`,
+            statusColor: '#ffad1f'
+        });
+        
+        checkBulkComplete();
+    }
 }
 
 // Check if bulk scraping is complete
 function checkBulkComplete() {
     // Remove done tabs from active list
     bulkState.activeTabs = bulkState.activeTabs.filter(t => t.status !== 'done');
-    
+
     // Update state
     updateBulkState({
         activeTabs: bulkState.activeTabs
     });
-    
+
     // If more keywords to process, open more tabs
     if (bulkState.currentKeywordIndex < bulkState.keywords.length) {
         openNextKeywordTabs();
         return;
     }
-    
-    // Check if all tabs are done
+
+    // Fallback: If all tabs are done but not all keywords are marked complete, force-complete
+    if (bulkState.activeTabs.length === 0 && bulkState.completedKeywords < bulkState.totalKeywords) {
+        console.warn('[Background] Fallback: All tabs closed but not all keywords completed. Forcing completion.');
+        bulkState.completedKeywords = bulkState.totalKeywords;
+    }
+
+    // Check if all tabs are done and all keywords are marked complete
     if (bulkState.activeTabs.length === 0 && bulkState.completedKeywords >= bulkState.totalKeywords) {
         console.log('[Background] Bulk scraping complete!');
-        
+
         // Combine all results
         const allTweets = bulkState.allResults.flatMap(r => r.tweets);
-        
+
         updateBulkState({
             isRunning: false,
             statusMessage: `Complete! ${allTweets.length} total tweets from ${bulkState.totalKeywords} keywords`,
             statusColor: '#5ABD4E'
         });
-        
+
         // Save results and open analytics
         chrome.storage.local.set({ 
             postData: JSON.stringify(allTweets),
@@ -224,19 +291,24 @@ function checkBulkComplete() {
             console.log('[Background] Bulk results saved');
             chrome.tabs.create({ url: 'src/pages/analytic/direct.html' });
         });
-        
+
         // Reset after delay
         setTimeout(() => resetBulkState(), 5000);
     }
 }
 
-// Handle tab removal (user closed tab or error)
+// Handle tab removal (user closed tab or error - NOT our intentional closes)
 chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
     if (!bulkState.isRunning) return;
     
-    const tabInfo = bulkState.activeTabs.find(t => t.tabId === tabId);
-    if (tabInfo && tabInfo.status !== 'done') {
-        console.log('[Background] Tab removed for keyword:', tabInfo.keyword);
+    const tabIndex = bulkState.activeTabs.findIndex(t => t.tabId === tabId);
+    if (tabIndex === -1) return; // Not our tab
+    
+    const tabInfo = bulkState.activeTabs[tabIndex];
+    
+    // Only handle if tab wasn't already marked as done (i.e., user closed it)
+    if (tabInfo.status !== 'done') {
+        console.log('[Background] Tab unexpectedly removed for keyword:', tabInfo.keyword, '- status was:', tabInfo.status);
         tabInfo.status = 'done';
         bulkState.completedKeywords++;
         
@@ -548,6 +620,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Start bulk keyword scraping
     if (message.action === 'startBulkScrape') {
         console.log('[Background] Starting bulk scrape with', message.keywords.length, 'keywords');
+        console.log('[Background] Keywords:', JSON.stringify(message.keywords));
         
         resetBulkState();
         
@@ -556,11 +629,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         bulkState.totalKeywords = message.keywords.length;
         bulkState.settings = message.settings || { waitTime: 2, scrapeReplies: true };
         bulkState.maxConcurrentTabs = message.maxConcurrentTabs || 3;
+        bulkState.statusMessage = `Starting bulk scrape of ${message.keywords.length} keywords...`;
+        bulkState.statusColor = '#1da1f2';
         
-        updateBulkState({
-            statusMessage: `Starting bulk scrape of ${message.keywords.length} keywords...`,
-            statusColor: '#1da1f2'
-        });
+        // Start timeout checking interval (check every 30 seconds)
+        if (bulkState.timeoutCheckInterval) {
+            clearInterval(bulkState.timeoutCheckInterval);
+        }
+        bulkState.timeoutCheckInterval = setInterval(checkForStuckTabs, 30000);
+        
+        // Save full state including keywords
+        chrome.storage.local.set({ bulkState: bulkState });
         
         // Start opening tabs
         openNextKeywordTabs();
@@ -588,6 +667,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Cancel bulk scraping
     if (message.action === 'cancelBulkScrape') {
         console.log('[Background] Cancelling bulk scrape');
+        
+        // Clear timeout check interval
+        if (bulkState.timeoutCheckInterval) {
+            clearInterval(bulkState.timeoutCheckInterval);
+        }
         
         // Close all active tabs
         for (const tab of bulkState.activeTabs) {

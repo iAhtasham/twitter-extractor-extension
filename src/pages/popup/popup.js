@@ -1,3 +1,11 @@
+// Check if bulk scraping is running - redirect to bulk.html if so
+chrome.storage.local.get(['bulkState'], function(result) {
+    if (result.bulkState && result.bulkState.isRunning) {
+        console.log('[Popup] Bulk scraping in progress - redirecting to bulk.html');
+        window.location.href = 'bulk.html';
+    }
+});
+
 // Debug helper
 function debug(msg) {
     console.log('[Popup]', msg);

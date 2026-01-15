@@ -1,6 +1,6 @@
 // Bulk Keyword Scraper - popup.js
 
-const MAX_KEYWORDS = 20;
+const MAX_KEYWORDS = 50;
 
 // Debug helper
 function debug(msg) {
@@ -153,22 +153,48 @@ debug('Script loaded');
 // Setup textarea listener
 document.getElementById('keywords-input').addEventListener('input', updateKeywordCount);
 
-// Check if bulk scraping is already running
-checkBulkState(function(state) {
-    debug('Bulk state check: ' + JSON.stringify(state));
-    
-    if (state && state.isRunning) {
-        debug('Bulk scrape in progress - showing stats');
-        showStats(true);
-        updateStats(state);
-        startPolling();
-    } else if (state && state.completedKeywords > 0 && state.totalKeywords > 0) {
-        debug('Bulk scrape complete - showing stats');
-        showStats(true);
-        updateStats(state);
-    } else {
-        debug('No active bulk scrape');
-        setStatus('Enter keywords to start', 'info');
+// Initialize UI - check if bulk scraping is already running
+function initUI() {
+    checkBulkState(function(state) {
+        debug('Bulk state check: ' + JSON.stringify(state));
+        
+        if (state && state.isRunning) {
+            debug('Bulk scrape in progress - showing stats');
+            showStats(true);
+            updateStats(state);
+            startPolling();
+            // Disable start button while running
+            document.getElementById('scrape-btn').disabled = true;
+        } else if (state && !state.isRunning && state.completedKeywords > 0 && state.totalKeywords > 0 && state.statusMessage && state.statusMessage.includes('Complete')) {
+            debug('Bulk scrape complete - showing stats');
+            showStats(true);
+            updateStats(state);
+            // Enable start button for new scrape
+            document.getElementById('scrape-btn').disabled = false;
+        } else {
+            debug('No active bulk scrape');
+            showStats(false);
+            setStatus('Enter keywords to start', 'info');
+            // Enable start button
+            updateKeywordCount();
+        }
+    });
+}
+
+// Run init
+initUI();
+
+// Re-check state when window gains focus (in case popup was reopened)
+window.addEventListener('focus', function() {
+    debug('Window focused - rechecking state');
+    initUI();
+});
+
+// Also listen for visibility changes
+document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) {
+        debug('Document visible - rechecking state');
+        initUI();
     }
 });
 
@@ -241,7 +267,8 @@ document.getElementById('cancel-btn').onclick = function() {
             setStatus('Cancelled', 'warning');
             stopPolling();
             showStats(false);
-            document.getElementById('scrape-btn').disabled = false;
+            // Re-enable start button and update count
+            updateKeywordCount();
         }
     });
 };
