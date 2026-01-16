@@ -682,6 +682,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         console.log('[Background] Status:', message.source);
         try {
             const status = JSON.parse(message.source);
+            
+            // Check if it's a rate limit message
+            const isRateLimit = status.content && status.content.includes('Rate limit');
+            
             // Parse tweet count from status message like "21 tweets scraped (last: ...)"
             const match = status.content.match(/(\d+) tweets? scraped/);
             if (match && scrapingState.phase !== 'replies') {
@@ -696,6 +700,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     statusMessage: status.content,
                     statusColor: status.color
                 });
+            }
+            
+            // If it's a rate limit message in bulk mode, extend the timeout for that tab
+            if (isRateLimit && bulkState.isRunning) {
+                console.log('[Background] Rate limit detected, extending tab timeout by 2 minutes');
+                // Find the currently scraping tab and extend its start time
+                const scrapingTab = bulkState.activeTabs.find(t => t.status === 'scraping');
+                if (scrapingTab) {
+                    scrapingTab.startTime = Date.now(); // Reset start time to give it more time
+                }
             }
         } catch (e) {
             console.error('[Background] Failed to parse status:', e);
@@ -768,6 +782,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             clearInterval(bulkState.timeoutCheckInterval);
         }
         
+        // Save partial results if any were collected
+        if (bulkState.allResults.length > 0) {
+            console.log('[Background] Saving partial results from', bulkState.allResults.length, 'keywords');
+            
+            const allTweets = bulkState.allResults.flatMap(r => r.tweets);
+            console.log('[Background] Total tweets collected before cancel:', allTweets.length);
+            
+            // Save results and open analytics
+            chrome.storage.local.set({ 
+                postData: JSON.stringify(allTweets),
+                bulkResults: JSON.stringify(bulkState.allResults)
+            }, function() {
+                console.log('[Background] Partial results saved. Opening analytics...');
+                chrome.tabs.create({ url: 'src/pages/analytic/direct.html' });
+            });
+        } else {
+            console.log('[Background] No results to save - scraping was cancelled before any tweets were collected');
+        }
+        
         // Close all active tabs
         for (const tab of bulkState.activeTabs) {
             try {
@@ -776,7 +809,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         
         resetBulkState();
-        sendResponse({ success: true, message: 'Bulk scraping cancelled' });
+        sendResponse({ success: true, message: 'Bulk scraping cancelled', resultsCollected: bulkState.allResults.length });
         return true;
     }
 });

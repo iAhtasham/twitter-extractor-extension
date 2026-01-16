@@ -27,6 +27,33 @@ if (!window.attemptErrorRecovery) {
   window.attemptErrorRecovery = async function() {
     console.log('[DirectScraper] Attempting error recovery...');
     
+    // Check if it's a rate limit error (429) by looking at console or checking for specific error
+    var isRateLimit = false;
+    var errorTexts = document.querySelectorAll('[dir="ltr"]');
+    for (var elem of errorTexts) {
+      if (elem.innerText && elem.innerText.includes('Try reloading')) {
+        // Assume any error during bulk scraping is likely rate limit
+        isRateLimit = true;
+        break;
+      }
+    }
+    
+    if (isRateLimit) {
+      console.warn('[DirectScraper] Rate limit detected (429). Waiting 2 minutes before retry...');
+      chrome.runtime.sendMessage({
+        action: "getStatus",
+        source: JSON.stringify({
+          content: `Rate limit hit. Waiting 2 minutes before continuing...`,
+          color: "#ffad1f",
+        }),
+      });
+      
+      // Wait 2 minutes (120 seconds)
+      await window.waitTill(120000);
+      
+      console.log('[DirectScraper] 2 minute wait complete. Attempting retry...');
+    }
+    
     // Try clicking the retry button
     var retryButtons = document.querySelectorAll('button[role="button"]');
     for (var btn of retryButtons) {
@@ -226,7 +253,7 @@ if (!window.scrollToBottom) {
     var preTweetCount = 0;
     var maxRepeatsWithoutChange = 5; // Increased from 2 to 5 for more thorough scrolling
     var errorRecoveryAttempts = 0;
-    var maxErrorRecoveryAttempts = 3;
+    var maxErrorRecoveryAttempts = 5; // Increased to 5 to handle multiple rate limits
     
     console.log('[DirectScraper] Starting scroll with waitTime:', waitTime, 'maxTweets:', maxTweets);
     
